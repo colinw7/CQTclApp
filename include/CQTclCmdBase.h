@@ -4,6 +4,7 @@
 #include <CQTclCmdArgs.h>
 #include <QString>
 #include <QVariant>
+#include <QPointer>
 #include <vector>
 
 class CQTclApp;
@@ -67,6 +68,10 @@ class CQTclCmdBase {
   bool execQtAddStretchCmd    (CQTclCmdArgs &args);
   bool execQtConnectWidgetCmd (CQTclCmdArgs &args);
   bool execQtActivateSlotCmd  (CQTclCmdArgs &args);
+  bool execQtGetWidgetsCmd    (CQTclCmdArgs &args);
+
+  bool execQtGetWidgetDataCmd(CQTclCmdArgs &args);
+  bool execQtSetWidgetDataCmd(CQTclCmdArgs &args);
 
   // qt properties
   bool execQtGetPropertyCmd(CQTclCmdArgs &args);
@@ -153,6 +158,10 @@ CQTCL_BASE_DEF_CMD(QtAddChildWidget)
 CQTCL_BASE_DEF_CMD(QtAddStretch    )
 CQTCL_BASE_DEF_CMD(QtConnectWidget )
 CQTCL_BASE_DEF_CMD(QtActivateSlot  )
+CQTCL_BASE_DEF_CMD(QtGetWidgets    )
+
+CQTCL_BASE_DEF_CMD(QtGetWidgetData)
+CQTCL_BASE_DEF_CMD(QtSetWidgetData)
 
 // qt properties
 CQTCL_BASE_DEF_CMD(QtGetProperty)
@@ -177,7 +186,7 @@ class CQTclCmdBaseSlot : public QObject {
   Q_OBJECT
 
  public:
-  CQTclCmdBaseSlot(CQTclCmdBase *base, const QString &procName);
+  CQTclCmdBaseSlot(CQTclCmdBase *base, QWidget *w, const QString &procName);
 
   CQTclCmdBase *base() const { return base_; }
 
@@ -194,7 +203,10 @@ class CQTclCmdBaseSlot : public QObject {
   void execProc(const QString &args="");
 
  private:
+  using WidgetP = QPointer<QWidget>;
+
   CQTclCmdBase *base_ { nullptr };
+  WidgetP       w_;
   QString       procName_;
 };
 

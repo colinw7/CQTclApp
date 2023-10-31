@@ -1,5 +1,6 @@
 #include <CQTclCmdBase.h>
 #include <CQTclApp.h>
+#include <CQTclControl.h>
 #include <CQTclUtil.h>
 
 #include <CQWidgetFactory.h>
@@ -16,13 +17,25 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QTableWidget>
+#include <QTextBrowser>
 #include <QTextEdit>
 #include <QToolButton>
+#include <QTreeWidget>
 
 #include <QGridLayout>
 #include <QFormLayout>
+
+namespace {
+
+static bool s_slots_enabled = true;
+
+}
 
 //---
 
@@ -85,10 +98,12 @@ addCommands()
   if (! cmdsAdded) {
     auto wmgr = CQWidgetFactoryMgrInst;
 
-    // containers
+    // containers (menu ?)
     wmgr->addWidgetFactoryT<QFrame        >("gui:frame");
     wmgr->addWidgetFactoryT<QGroupBox     >("gui:group");
+    wmgr->addWidgetFactoryT<QSplitter     >("gui:splitter");
     wmgr->addWidgetFactoryT<QTabWidget    >("gui:tab");
+    wmgr->addWidgetFactoryT<QStackedWidget>("gui:stack");
 
     // controls
     wmgr->addWidgetFactoryT<QCheckBox     >("gui:check");
@@ -96,16 +111,20 @@ addCommands()
     wmgr->addWidgetFactoryT<QDoubleSpinBox>("gui:double_spinbox");
     wmgr->addWidgetFactoryT<QLabel        >("gui:label");
     wmgr->addWidgetFactoryT<QLineEdit     >("gui:line_edit");
+    wmgr->addWidgetFactoryT<QListWidget   >("gui:list");
     wmgr->addWidgetFactoryT<QPushButton   >("gui:push_button");
     wmgr->addWidgetFactoryT<QRadioButton  >("gui:radio_button");
     wmgr->addWidgetFactoryT<QSpinBox      >("gui:spinbox");
+    wmgr->addWidgetFactoryT<QTableWidget  >("gui:table");
+    wmgr->addWidgetFactoryT<QTextBrowser  >("gui:text_browser");
     wmgr->addWidgetFactoryT<QTextEdit     >("gui:text_edit");
     wmgr->addWidgetFactoryT<QToolButton   >("gui:tool_button");
+    wmgr->addWidgetFactoryT<QTreeWidget   >("gui:tree");
 
     // layouts
     wmgr->addLayoutFactoryT<QHBoxLayout >("gui:hbox");
-    wmgr->addLayoutFactoryT<QHBoxLayout >("gui:vbox");
-    wmgr->addLayoutFactoryT<QHBoxLayout >("gui:grid");
+    wmgr->addLayoutFactoryT<QVBoxLayout >("gui:vbox");
+    wmgr->addLayoutFactoryT<QGridLayout >("gui:grid");
     wmgr->addLayoutFactoryT<QFormLayout >("gui:form");
     wmgr->addLayoutFactoryT<CQFlowLayout>("gui:flow");
 
@@ -122,6 +141,10 @@ addCommands()
     CQTCL_BASE_ADD_CMD("qt_add_stretch"     , QtAddStretch);
     CQTCL_BASE_ADD_CMD("qt_connect_widget"  , QtConnectWidget);
     CQTCL_BASE_ADD_CMD("qt_activate_slot"   , QtActivateSlot);
+    CQTCL_BASE_ADD_CMD("qt_get_widgets"     , QtGetWidgets);
+
+    CQTCL_BASE_ADD_CMD("qt_get_widget_data", QtGetWidgetData);
+    CQTCL_BASE_ADD_CMD("qt_set_widget_data", QtSetWidgetData);
 
     CQTCL_BASE_ADD_CMD("qt_get_property", QtGetProperty);
     CQTCL_BASE_ADD_CMD("qt_set_property", QtSetProperty);
@@ -372,6 +395,7 @@ execQtAddChildWidgetCmd(CQTclCmdArgs &argv)
   CQPerfTrace trace("CQTclCmdBase::execQtAddChildWidgetCmd");
 
   argv.addCmdArg("-parent" , CQTclCmdArg::Type::String , "parent name");
+  argv.addCmdArg("-control", CQTclCmdArg::Type::String , "control name");
   argv.addCmdArg("-child"  , CQTclCmdArg::Type::String , "layout type");
   argv.addCmdArg("-stretch", CQTclCmdArg::Type::Integer, "stretch");
   argv.addCmdArg("-label"  , CQTclCmdArg::Type::String , "label");
@@ -381,12 +405,31 @@ execQtAddChildWidgetCmd(CQTclCmdArgs &argv)
   if (! argv.parse())
     return false;
 
-  auto parentName = argv.getParseStr("parent");
+  //---
 
-  auto *parentWidget = qobject_cast<QWidget *>(CQUtil::nameToObject(parentName));
+  auto parentName  = argv.getParseStr("parent");
+  auto controlName = argv.getParseStr("control");
 
-  if (! parentWidget)
-    return errorMsg(QString("No parent '%1'").arg(parentName));
+  QWidget *parentWidget = nullptr;
+
+  if      (parentName != "") {
+    parentWidget = qobject_cast<QWidget *>(CQUtil::nameToObject(parentName));
+
+    if (! parentWidget)
+      return errorMsg(QString("No parent '%1'").arg(parentName));
+  }
+  else if (controlName != "") {
+    auto *control = CQTclControlMgrInst->getControl(controlName);
+
+    if (! control)
+      return errorMsg(QString("No control '%1'").arg(controlName));
+
+    parentWidget = control->getWidget();
+  }
+  else
+    return errorMsg(QString("Missing -parent or -control"));
+
+  //---
 
   if      (argv.hasParseArg("child")) {
     auto childName = argv.getParseStr("child");
@@ -524,83 +567,56 @@ execQtConnectWidgetCmd(CQTclCmdArgs &argv)
   if (! widget)
     return errorMsg(QString("No widget '%1'").arg(name));
 
-  auto signalName = argv.getParseStr("signal");
-
   //---
 
-  CQStrParse parse(signalName);
+  auto signalName = argv.getParseStr("signal");
+  auto normSignal = QString(QMetaObject::normalizedSignature(signalName.toLatin1().constData()));
 
-  auto parseIdentifier = [&]() {
-    parse.skipSpace();
+  // replace routine name in signal name
+  auto ind = normSignal.indexOf("(");
+  if (ind < 0)
+    return errorMsg(QString("Invalid signal name '%1'").arg(signalName));
 
-    auto pos = parse.getPos();
-
-    if (! parse.eof() && (parse.isAlpha() || parse.isChar('_')))
-      parse.skipChar();
-
-    while (! parse.eof() && (parse.isAlnum() || parse.isChar('_')))
-      parse.skipChar();
-
-    return parse.getBefore(pos);
-  };
-
-  auto signalProc = parseIdentifier();
-
-  QStringList argTypes;
-
-  if (parse.isChar('(')) {
-    parse.skipChar();
-    parse.skipSpace();
-
-    if (! parse.isChar(')')) {
-      while (! parse.eof()) {
-        auto argType = parseIdentifier();
-
-        argTypes.push_back(argType);
-
-        parse.skipSpace();
-
-        if (parse.isChar(')')) {
-          parse.skipChar();
-          parse.skipSpace();
-
-          break;
-        }
-
-        if (! parse.isChar(','))
-          break;
-
-        parse.skipChar();
-      }
-    }
-    else {
-      parse.skipChar();
-      parse.skipSpace();
-    }
-  }
-
-  auto slotName1 = QString("1") + "connectSlot(";
-
-  uint na = uint(argTypes.size());
-
-  for (uint ia = 0; ia < na; ++ia) {
-    if (ia != 0)
-      slotName1 += ", ";
-
-    slotName1 += argTypes[ia];
-  }
-
-  slotName1 += ")";
+  auto slotName = QString("1") + "connectSlot" + normSignal.mid(ind);
 
   //---
 
   auto procName = argv.getParseStr("proc");
 
-  auto *slot = new CQTclCmdBaseSlot(this, procName);
+  auto *slot = new CQTclCmdBaseSlot(this, widget, procName);
 
-  auto signalName2 = (QString("2") + signalName).toStdString();
+  //---
 
-  QObject::connect(widget, signalName2.c_str(), slot, slotName1.toLatin1().constData());
+  auto *list  = qobject_cast<QListView *>(widget);
+  auto *table = qobject_cast<QTableView *>(widget);
+
+  if      (list) {
+    if (normSignal == "valueChanged()") {
+      auto *sm = list->selectionModel();
+      if (! sm) return false;
+
+      QObject::connect(sm, SIGNAL(selectionChanged(const QItemSelection &, const QItemSelection &)),
+                       slot, slotName.toLatin1().constData());
+
+      return true;
+    }
+  }
+  else if (table) {
+    if (normSignal == "valueChanged()") {
+      auto *sm = table->selectionModel();
+      if (! sm) return false;
+
+      QObject::connect(sm, SIGNAL(selectionChanged(const QItemSelection &, const QItemSelection &)),
+                       slot, slotName.toLatin1().constData());
+
+      return true;
+    }
+  }
+
+  auto signalName2 = QString("2") + normSignal;
+
+  QObject::connect(widget, signalName2.toLatin1().constData(),
+                   slot, slotName.toLatin1().constData());
 
   return true;
 }
@@ -639,6 +655,144 @@ execQtActivateSlotCmd(CQTclCmdArgs &argv)
 
 //------
 
+// qt_get_widgets
+bool
+CQTclCmdBase::
+execQtGetWidgetsCmd(CQTclCmdArgs &argv)
+{
+  CQPerfTrace trace("CQTclCmdBase::execQtGetWidgetsCmd");
+
+  argv.addCmdArg("-parent" , CQTclCmdArg::Type::String , "parent name");
+  argv.addCmdArg("-control", CQTclCmdArg::Type::String , "control name");
+  argv.addCmdArg("-name"   , CQTclCmdArg::Type::String, "name pattern");
+
+  if (! argv.parse())
+    return false;
+
+  //---
+
+  auto parentName  = argv.getParseStr("parent");
+  auto controlName = argv.getParseStr("control");
+
+  QWidget *parentWidget = nullptr;
+
+  if      (parentName != "") {
+    parentWidget = qobject_cast<QWidget *>(CQUtil::nameToObject(parentName));
+
+    if (! parentWidget)
+      return errorMsg(QString("No parent '%1'").arg(parentName));
+  }
+  else if (controlName != "") {
+    auto *control = CQTclControlMgrInst->getControl(controlName);
+
+    if (! control)
+      return errorMsg(QString("No control '%1'").arg(controlName));
+
+    parentWidget = control->getWidget();
+  }
+
+  //---
+
+  auto name = argv.getParseStr("name");
+
+  auto objects = CQUtil::nameToObjects(parentWidget, name);
+
+  QStringList names;
+
+  for (auto *object : objects) {
+    auto path = CQUtil::fullName(object);
+
+    names.push_back(path);
+  }
+
+  return setCmdRc(names);
+}
+
+//------
+
+// qt_get_widget_data
+bool
+CQTclCmdBase::
+execQtGetWidgetDataCmd(CQTclCmdArgs &argv)
+{
+  CQPerfTrace trace("CQTclCmdBase::execQtGetWidgetDatCmd");
+
+  argv.addCmdArg("-widget", CQTclCmdArg::Type::String, "widget name");
+  argv.addCmdArg("-name"  , CQTclCmdArg::Type::String, "data name");
+
+  if (! argv.parse())
+    return false;
+
+  auto widgetName = argv.getParseStr("widget");
+
+  auto *w = qobject_cast<QWidget *>(CQUtil::nameToObject(widgetName));
+
+  if (! w)
+    return errorMsg(QString("No widget '%1'").arg(widgetName));
+
+  auto name = argv.getParseStr("name");
+
+  //---
+
+  QVariant value;
+
+  if (name == "value") {
+    if (! CQUtil::getWidgetValue(w, value))
+      return false;
+  }
+  else
+    return errorMsg(QString("Invalid data name '%1'").arg(name));
+
+  return setCmdRc(value);
+}
+
+//------
+
+// qt_set_widget_data
+bool
+CQTclCmdBase::
+execQtSetWidgetDataCmd(CQTclCmdArgs &argv)
+{
+  CQPerfTrace trace("CQTclCmdBase::execQtGetWidgetDatCmd");
+
+  argv.addCmdArg("-widget", CQTclCmdArg::Type::String, "widget name");
+  argv.addCmdArg("-name"  , CQTclCmdArg::Type::String, "data name");
+  argv.addCmdArg("-value" , CQTclCmdArg::Type::String, "data value");
+
+  if (! argv.parse())
+    return false;
+
+  auto widgetName = argv.getParseStr("widget");
+
+  auto *w = qobject_cast<QWidget *>(CQUtil::nameToObject(widgetName));
+
+  if (! w)
+    return errorMsg(QString("No widget '%1'").arg(widgetName));
+
+  auto name = argv.getParseStr("name");
+
+  //---
+
+  auto value = argv.getParseStr("value");
+
+  if (name == "value") {
+    s_slots_enabled = false;
+
+    auto rc = CQUtil::setWidgetValue(w, value);
+
+    s_slots_enabled = true;
+
+    if (! rc)
+      return false;
+  }
+  else
+    return errorMsg(QString("Invalid data name '%1'").arg(name));
+
+  return true;
+}
+
+//------
+
 // qt_get_property
 bool
 CQTclCmdBase::
@@ -660,6 +814,8 @@ execQtGetPropertyCmd(CQTclCmdArgs &argv)
     return errorMsg(QString("No object '%1'").arg(objectName));
 
   auto propName = argv.getParseStr("property");
+
+  //---
 
   QVariant v;
 
@@ -695,17 +851,123 @@ execQtSetPropertyCmd(CQTclCmdArgs &argv)
   auto propName = argv.getParseStr("property");
   auto value    = argv.getParseStr("value");
 
-  if (propName == "items") {
+  if      (propName == "items") {
     auto *combo = qobject_cast<QComboBox *>(obj);
+    auto *list  = qobject_cast<QListView *>(obj);
+    auto *table = qobject_cast<QTableView *>(obj);
 
-    if (combo) {
-      QStringList strs;
+    QStringList strs;
 
-      CQTclUtil::splitList(value, strs);
+    CQTclUtil::splitList(value, strs);
 
+    if      (combo) {
       combo->clear();
 
       combo->addItems(strs);
+
+      return true;
+    }
+    else if (list) {
+      auto *model = list->model();
+      assert(model);
+
+      int nr = strs.length();
+
+      while (model->rowCount() > nr) model->removeRow(0);
+      while (model->rowCount() < nr) model->insertRow(0);
+
+      for (int r = 0; r < nr; ++r) {
+        auto ind = model->index(r, 0, QModelIndex());
+
+        model->setData(ind, strs[r], Qt::DisplayRole);
+      }
+
+      return true;
+    }
+    else if (table) {
+      auto *model = table->model();
+      assert(model);
+
+      int nr = strs.length();
+
+      while (model->rowCount() > nr) model->removeRow(0);
+      while (model->rowCount() < nr) model->insertRow(0);
+
+      int nc = 0;
+
+      for (int r = 0; r < nr; ++r) {
+        QStringList strs1;
+
+        CQTclUtil::splitList(strs[r], strs1);
+
+        int nc1 = strs1.length();
+
+        nc = std::max(nc, nc1);
+      }
+
+      while (model->columnCount() > nc) model->removeColumn(0);
+      while (model->columnCount() < nc) model->insertColumn(0);
+
+      for (int r = 0; r < nr; ++r) {
+        QStringList strs1;
+
+        CQTclUtil::splitList(strs[r], strs1);
+
+        int nc1 = strs1.length();
+
+        for (int c = 0; c < nc1; ++c) {
+          auto ind = model->index(r, c, QModelIndex());
+
+          model->setData(ind, strs1[c], Qt::DisplayRole);
+        }
+      }
+
+      return true;
+    }
+  }
+  else if (propName == "value") {
+    auto *list  = qobject_cast<QListView *>(obj);
+    auto *table = qobject_cast<QTableView *>(obj);
+
+    if      (list) {
+      auto *model = list->model();
+      assert(model);
+
+      auto *sm = list->selectionModel();
+      if (! sm) return false;
+
+      bool ok;
+      int r = value.toInt(&ok);
+      if (! ok) return false;
+
+      QItemSelection sel;
+
+      auto ind = model->index(r, 0, QModelIndex());
+
+      sel.select(ind, ind);
+
+      sm->select(sel, QItemSelectionModel::Select | QItemSelectionModel::Clear);
+
+      return true;
+    }
+    else if (table) {
+      auto *model = table->model();
+      assert(model);
+
+      auto *sm = table->selectionModel();
+      if (! sm) return false;
+
+      bool ok;
+      int r = value.toInt(&ok);
+      if (! ok) return false;
+
+      QItemSelection sel;
+
+      auto ind = model->index(r, 0, QModelIndex());
+
+      sel.select(ind, ind);
+
+      sm->select(sel, QItemSelectionModel::Select | QItemSelectionModel::Clear);
 
       return true;
     }
@@ -809,7 +1071,7 @@ execTimerCmd(CQTclCmdArgs &argv)
   if (procName == "")
     return errorMsg("No proc");
 
-  auto *slot = new CQTclCmdBaseSlot(this, procName);
+  auto *slot = new CQTclCmdBaseSlot(this, nullptr, procName);
 
   QTimer::singleShot(delay, slot, SLOT(timerSlot()));
 
@@ -1115,8 +1377,8 @@ errorMsg(const QString &msg)
 //---
 
 CQTclCmdBaseSlot::
-CQTclCmdBaseSlot(CQTclCmdBase *base, const QString &procName) :
- base_(base), procName_(procName) {
+CQTclCmdBaseSlot(CQTclCmdBase *base, QWidget *w, const QString &procName) :
+ base_(base), w_(w), procName_(procName) {
 }
 
 void
@@ -1170,9 +1432,18 @@ void
 CQTclCmdBaseSlot::
 execProc(const QString &args)
 {
+  if (! s_slots_enabled)
+    return;
+
   auto cmd = procName_;
 
-  auto *obj = sender();
+  QObject *obj;
+
+  if (w_)
+    obj = w_.data();
+
+  if (! obj)
+    obj = sender();
 
   if (obj)
      cmd += QString(" {%1}").arg(CQUtil::fullName(obj));

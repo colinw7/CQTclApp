@@ -1,7 +1,7 @@
 #ifndef CQTclAppShell_H
 #define CQTclAppShell_H
 
-#include <QDialog>
+#include <QFrame>
 
 class CQTclApp;
 
@@ -9,12 +9,14 @@ namespace CQCommand {
 class ScrollArea;
 }
 
-class CQTclAppShell : public QDialog {
+class CQTclAppShell : public QFrame {
   Q_OBJECT
 
  public:
   CQTclAppShell(CQTclApp *app);
  ~CQTclAppShell();
+
+  QFrame *control() const { return control_; }
 
   QSize sizeHint() const override;
 
@@ -23,6 +25,7 @@ class CQTclAppShell : public QDialog {
 
  private:
   CQTclApp*              app_     { nullptr };
+  QFrame*                control_ { nullptr };
   CQCommand::ScrollArea* command_ { nullptr };
 };
 
